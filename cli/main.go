@@ -5,6 +5,10 @@ import (
 	"github.com/alecthomas/kong"
 	"github.com/featheredtoast/ddns-route53/internal/aws"
 	"github.com/featheredtoast/ddns-route53/internal/iplookup"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 )
 
 type Context struct {
@@ -16,17 +20,20 @@ type Context struct {
 }
 
 type OnceCmd struct {
-	Arg string
 }
 
-func (o *OnceCmd) Run(ctx *Context) error {
+func (cmd *OnceCmd) Run(ctx *Context) error {
 	fmt.Println("run command!")
 	fmt.Println(ctx.IpServer)
 
-	i := iplookup.IpGetter{Server: ctx.IpServer}
-	ip, err := i.GetIp()
+	i := &iplookup.IpGetter{Server: ctx.IpServer, Record: ctx.RecordName}
+	updateNeeded, ip, err := i.IpChanged()
 	if err != nil {
 		return err
+	}
+	if !updateNeeded {
+		fmt.Println("No update needed. returning.")
+		return nil
 	}
 	updater := aws.IpUpdater{Ip: ip, RecordName: ctx.RecordName, ZoneId: ctx.ZoneId}
 	result, err := updater.UpdateIp()
@@ -41,8 +48,27 @@ func (o *OnceCmd) Run(ctx *Context) error {
 
 type ContinuousCmd struct{}
 
-func (c *ContinuousCmd) Run(ctx *Context) error {
+func (cmd *ContinuousCmd) Run(ctx *Context) error {
 	fmt.Println("run continuously")
+	sig := make(chan os.Signal)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	timeout := 1 * time.Second
+runner:
+	for {
+		select {
+		case <-time.After(timeout):
+			fmt.Println("checking IP")
+			checker := OnceCmd{}
+			err := checker.Run(ctx)
+			if err != nil {
+				fmt.Println("Got error: ", err)
+			}
+			timeout = 10 * time.Minute
+		case <-sig:
+			fmt.Println("exiting")
+			break runner
+		}
+	}
 	return nil
 }
 
