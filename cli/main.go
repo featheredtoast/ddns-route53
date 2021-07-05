@@ -2,12 +2,9 @@ package main
 
 import (
 	"fmt"
-	"io/ioutil"
-	"net/http"
 	"github.com/alecthomas/kong"
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/route53"
+	"github.com/featheredtoast/ddns-route53/internal/aws"
+	"github.com/featheredtoast/ddns-route53/internal/iplookup"
 )
 
 type Context struct {
@@ -18,16 +15,6 @@ type Context struct {
 	RecordName string
 }
 
-func GetIp(ctx *Context) (string, error) {
-	resp, err := http.Get(ctx.IpServer)
-	defer resp.Body.Close()
-	if err != nil {
-		return "", err
-	}
-	body, err := ioutil.ReadAll(resp.Body)
-	return string(body), err
-}
-
 type OnceCmd struct {
 	Arg string
 }
@@ -36,43 +23,13 @@ func (o *OnceCmd) Run(ctx *Context) error {
 	fmt.Println("run command!")
 	fmt.Println(ctx.IpServer)
 
-	ip, err := GetIp(ctx)
+	i := iplookup.IpGetter{Server: ctx.IpServer}
+	ip, err := i.GetIp()
 	if err != nil {
 		return err
 	}
-
-	sess, err := session.NewSessionWithOptions(session.Options{
-		Config: aws.Config{
-			Region: aws.String("us-west-2"),
-		},
-	})
-	if err != nil {
-		return err
-	}
-	svc := route53.New(sess)
-	input := &route53.ChangeResourceRecordSetsInput{
-		ChangeBatch: &route53.ChangeBatch{
-			Changes: []*route53.Change{
-				{
-					Action: aws.String("UPSERT"),
-					ResourceRecordSet: &route53.ResourceRecordSet{
-						Name: aws.String(ctx.RecordName),
-						ResourceRecords: []*route53.ResourceRecord{
-							{
-								Value: aws.String(ip),
-							},
-						},
-						TTL:  aws.Int64(60),
-						Type: aws.String("A"),
-					},
-				},
-			},
-			Comment: aws.String("DDNS update"),
-		},
-		HostedZoneId: aws.String(ctx.ZoneId),
-	}
-
-	result, err := svc.ChangeResourceRecordSets(input)
+	updater := aws.IpUpdater{Ip: ip, RecordName: ctx.RecordName, ZoneId: ctx.ZoneId}
+	result, err := updater.UpdateIp()
 	if err != nil {
 		return err
 	}
